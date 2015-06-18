@@ -1,13 +1,15 @@
 package org.inveritas.lambda.lostfilm;
 
-import com.amazonaws.services.lambda.AWSLambda;
 import com.amazonaws.services.lambda.runtime.Context;
-import com.amazonaws.services.lambda.runtime.LambdaLogger;
+import com.amazonaws.services.lambda.runtime.RequestHandler;
+import com.amazonaws.services.lambda.runtime.events.SNSEvent;
 
-public class CheckNewSeriesLambda implements AWSLambda {
-    public String handler(int myCount, Context context) {
-        LambdaLogger logger = context.getLogger();
-        logger.log("received : " + myCount);
-        return String.valueOf(myCount);
+public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
+
+    public String handleRequest(SNSEvent snsEvent, Context context) {
+        for (SNSEvent.SNSRecord record : snsEvent.getRecords()) {
+            context.getLogger().log(record.getSNS().getMessage());
+        }
+        return "ok";
     }
 }
