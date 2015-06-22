@@ -5,9 +5,12 @@ import com.amazonaws.services.lambda.runtime.RequestHandler;
 import com.amazonaws.services.lambda.runtime.events.SNSEvent;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.*;
+import com.amazonaws.util.Throwables;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.eclipse.jetty.client.HttpClient;
+import org.eclipse.jetty.client.api.ContentResponse;
 import org.eclipse.jetty.client.api.Response;
 import org.eclipse.jetty.client.util.InputStreamResponseListener;
 import org.eclipse.jetty.http.HttpStatus;
@@ -29,23 +32,21 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.Scanner;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.*;
 
 public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
     private static final String RSS_LINK = "http://www.lostfilm.tv/rssdd.xml";
     private static final String BROWSE_LINK = "http://www.lostfilm.tv/browse.php";
 
-    private final ObjectMapper mapper = new ObjectMapper()
+    public static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
     private final ExecutorService executorService = Executors.newCachedThreadPool();
 
     public String handleRequest(SNSEvent snsEvent, Context context) {
         for (SNSEvent.SNSRecord record : snsEvent.getRecords()) {
             try {
-                ChimeMessage msg = mapper.readValue(record.getSNS().getMessage(), ChimeMessage.class);
+                ChimeMessage msg = MAPPER.readValue(record.getSNS().getMessage(), ChimeMessage.class);
                 if (!msg.getMinute().equals("00")) {
                     return "ok";
                 }
@@ -78,6 +79,13 @@ public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
                         }
                         newSeries = cleanFromDuplicates(newSeries);
                         setPictures(newSeries, browsePagePromise.get(2, TimeUnit.SECONDS));
+
+                        for (Series series : newSeries) {
+                            sendNotificationToSerialTag(series);
+                            sendNotificationToAllTopic(series);
+                        }
+
+                        saveLastDate(dateTime);
                     } finally {
                         if (xmlp != null) {
                             xmlp.close();
@@ -85,7 +93,8 @@ public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
                     }
                 }
             } catch (Exception e) {
-                context.getLogger().log(e.getMessage());
+                Throwable cause = Throwables.getRootCause(e);
+                context.getLogger().log(cause.getMessage());
             }
         }
         return "ok";
@@ -112,7 +121,7 @@ public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
                     try (S3ObjectInputStream s3is = s3Object.getObjectContent();
                          Scanner s = new Scanner(s3is)) {
                         String savedDateTimeStr = s.useDelimiter("\\A").hasNext() ? s.next() : "";
-                        savedDateTimeStr = "Sun, 21 Jun 2015 17:07:38 +0000";
+//                        savedDateTimeStr = "Sun, 21 Jun 2015 17:07:38 +0000";
                         return ZonedDateTime.parse(savedDateTimeStr, DateTimeFormatter.RFC_1123_DATE_TIME);
                     }
                 } catch (AmazonS3Exception e) {
@@ -196,6 +205,25 @@ public class CheckNewSeriesLambda implements RequestHandler<SNSEvent, String> {
                     break;
                 }
             }
+        }
+    }
+
+    private void sendNotificationToSerialTag(Series series) throws JsonProcessingException, InterruptedException, ExecutionException, TimeoutException {
+        sendNotification(series, "all");
+    }
+
+    private void sendNotificationToAllTopic(Series series) throws JsonProcessingException, InterruptedException, ExecutionException, TimeoutException {
+        sendNotification(series, series.getTitle().substring(0, series.getTitle().indexOf(").") + 2));
+    }
+
+    private void sendNotification(Series series, String tagValue) throws JsonProcessingException, InterruptedException, ExecutionException, TimeoutException {
+        ContentResponse response = HttpClientFactory.INSTANCE.getNotificationRequest("Новая серия",
+                series.getTitle(),
+                tagValue,
+                series.getImg()).send();
+        if (response.getStatus() != HttpStatus.OK_200) {
+            String error = response.getContentAsString();
+            throw new ExecutionException(new IOException("Notification status: " + response.getStatus() + " error: " + error));
         }
     }
 }

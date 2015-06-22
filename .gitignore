@@ -3,3 +3,4 @@
 /lambda-lostfilm.iml
 /.idea
 /src/main/resources/aws_creds
+/src/main/resources/onesignal_creds
